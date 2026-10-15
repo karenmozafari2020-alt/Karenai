@@ -1,44 +1,32 @@
 const express = require('express');
 const cors = require('cors');
 const app = express();
-app.use(cors());
+app.disable('x-powered-by');
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(express.json({ limit: '32kb' }));
-
-const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.OPENROUTER_API_KEY;
-const MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free';
-
-app.get('/', (_req, res) => res.type('text').send('Karen AI API is running.'));
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'Karen AI API' }));
+const PORT = process.env.PORT || 10000;
+const ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const API_TOKEN = process.env.CF_API_TOKEN;
+const MODEL = process.env.CF_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct';
+const SYSTEM_PROMPT = 'تو Karen AI هستی، یک دستیار هوش مصنوعی فارسی‌زبان و دوستانه. به زبان کاربر پاسخ بده. پاسخ‌ها مفید و روشن باشند. اگر مطمئن نیستی، صادقانه بگو. برای مسائل ریاضی مراحل را توضیح بده.';
+app.get('/', (_req, res) => res.json({ service: 'Karen AI API', status: 'ok', endpoint: 'POST /api/chat' }));
+app.get('/health', (_req, res) => res.json({ ok: true, configured: Boolean(ACCOUNT_ID && API_TOKEN), model: MODEL }));
 app.post('/api/chat', async (req, res) => {
+  if (!ACCOUNT_ID || !API_TOKEN) return res.status(503).json({ error: 'سرور هنوز تنظیم نشده است؛ متغیرهای Cloudflare را در Render اضافه کن.' });
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 6000) : '';
+  const history = Array.isArray(req.body?.history) ? req.body.history.slice(-8).filter(m => ['user','assistant'].includes(m?.role) && typeof m?.content === 'string').map(m => ({ role: m.role, content: m.content.slice(0, 3000) })) : [];
+  if (!message) return res.status(400).json({ error: 'پیام خالی است.' });
   try {
-    if (!API_KEY) return res.status(503).json({ error: 'کلید API در تنظیمات سرور ثبت نشده است.' });
-    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
-    if (!message) return res.status(400).json({ error: 'پیام خالی است.' });
-    if (message.length > 8000) return res.status(413).json({ error: 'پیام خیلی طولانی است.' });
-    const history = Array.isArray(req.body.history) ? req.body.history.slice(-14) : [];
-    const messages = [
-      { role: 'system', content: 'تو Karen AI هستی، یک دستیار مفید و دوستانه. به فارسی روان پاسخ بده مگر کاربر زبان دیگری بخواهد. سؤال را مستقیم و با جزئیات کافی پاسخ بده؛ اگر اطلاعات کافی نداری صادقانه بگو. برای ریاضی مراحل را روشن توضیح بده. پاسخ‌ها را بی‌دلیل کوتاه نکن و ادعای دسترسی به اینترنت یا اطلاعات زنده نداشته باش مگر ابزارش فراهم باشد. از محتوای خطرناک یا نامناسب برای نوجوانان خودداری کن.' },
-      ...history.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-        .map(m => ({ role: m.role, content: m.content.slice(0, 5000) })),
-    ];
-    if (!messages.some(m => m.role === 'user' && m.content === message)) messages.push({ role: 'user', content: message });
-    const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json', 'X-Title': 'Karen AI' },
-      body: JSON.stringify({ model: MODEL, messages, temperature: 0.7, max_tokens: 900 })
-    });
+    const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(ACCOUNT_ID)}/ai/run/${encodeURIComponent(MODEL)}`;
+    const upstream = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history, { role: 'user', content: message }], max_tokens: 700 }) });
     const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
-      console.error('Provider error:', upstream.status, data?.error?.message || 'unknown');
-      return res.status(502).json({ error: 'سرویس هوش مصنوعی فعلاً پاسخ نداد. ممکن است سهمیهٔ رایگان تمام شده باشد یا مدل در دسترس نباشد.' });
+    if (!upstream.ok || data.success === false) {
+      console.error('Cloudflare AI error:', upstream.status, JSON.stringify(data.errors || data));
+      return res.status(upstream.status === 429 ? 429 : 502).json({ error: upstream.status === 429 ? 'سهمیه یا محدودیت درخواست تمام شده؛ بعداً دوباره امتحان کن.' : 'Cloudflare AI پاسخ نداد. توکن، مدل و تنظیمات حساب را بررسی کن.' });
     }
-    const reply = data?.choices?.[0]?.message?.content;
-    if (!reply) return res.status(502).json({ error: 'پاسخ خالی از سرویس دریافت شد.' });
-    res.json({ reply: typeof reply === 'string' ? reply : JSON.stringify(reply) });
-  } catch (e) {
-    console.error('API error:', e.message);
-    res.status(500).json({ error: 'خطای داخلی سرور.' });
-  }
+    const answer = data.result?.response || data.result?.choices?.[0]?.message?.content;
+    if (!answer) return res.status(502).json({ error: 'مدل پاسخ متنی برنگرداند.' });
+    res.json({ answer, model: MODEL });
+  } catch (e) { console.error('AI request failed:', e.message); res.status(502).json({ error: 'اتصال به سرویس هوش مصنوعی ناموفق بود.' }); }
 });
-app.listen(PORT, () => console.log(`Karen AI API listening on ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Karen AI API listening on ${PORT}`));

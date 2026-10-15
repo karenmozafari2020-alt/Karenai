@@ -2,15 +2,9 @@
   "name": "karen-ai-api",
   "version": "1.0.0",
   "private": true,
+  "description": "Karen AI API using Cloudflare Workers AI from a Render Node.js service",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^5.1.0"
-  }
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "cors": "^2.8.5", "express": "^5.1.0" }
 }
