@@ -21,7 +21,7 @@ app.post('/api/chat', async (req, res) => {
   const history = Array.isArray(req.body?.history) ? req.body.history.slice(-8).filter(m => ['user','assistant'].includes(m?.role) && typeof m?.content === 'string').map(m => ({ role: m.role, content: m.content.slice(0, 3000) })) : [];
   if (!message) return res.status(400).json({ error: 'پیام خالی است.' });
   try {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(ACCOUNT_ID)}/ai/run/${encodeURIComponent(MODEL)}`;
+    const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${MODEL}`;
     const upstream = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history, { role: 'user', content: message }], max_tokens: 700 }) });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok || data.success === false) {
