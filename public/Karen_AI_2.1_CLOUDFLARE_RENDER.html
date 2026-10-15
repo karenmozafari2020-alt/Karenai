@@ -2738,7 +2738,7 @@ function clean(t){
   async function sendMsg(){
     if(sending)return;const q=input.value.trim();if(!q)return;
     add(q,'user');input.value='';sending=true;input.disabled=true;send.disabled=true;thinking();
-    const API_URL='https://YOUR-KAREN-API.onrender.com/api/chat';
+    const API_URL='https://karenai-zu1o.onrender.com/';
     try{
       const history=[];
       const response=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q,history})});
