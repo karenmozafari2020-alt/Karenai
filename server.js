@@ -9,7 +9,11 @@ const ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 const API_TOKEN = process.env.CF_API_TOKEN;
 const MODEL = process.env.CF_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct';
 const SYSTEM_PROMPT = 'تو Karen AI هستی، یک دستیار هوش مصنوعی فارسی‌زبان و دوستانه. به زبان کاربر پاسخ بده. پاسخ‌ها مفید و روشن باشند. اگر مطمئن نیستی، صادقانه بگو. برای مسائل ریاضی مراحل را توضیح بده.';
-app.get('/', (_req, res) => res.json({ service: 'Karen AI API', status: 'ok', endpoint: 'POST /api/chat' }));
+app.use(express.static('public'));
+
+app.get('/', (_req, res) => {
+  res.sendFile(require('path').join(__dirname, 'public', 'index.html'));
+});
 app.get('/health', (_req, res) => res.json({ ok: true, configured: Boolean(ACCOUNT_ID && API_TOKEN), model: MODEL }));
 app.post('/api/chat', async (req, res) => {
   if (!ACCOUNT_ID || !API_TOKEN) return res.status(503).json({ error: 'سرور هنوز تنظیم نشده است؛ متغیرهای Cloudflare را در Render اضافه کن.' });
