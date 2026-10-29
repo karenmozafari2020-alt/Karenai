@@ -33,4 +33,31 @@ app.post('/api/chat', async (req, res) => {
     res.json({ answer, model: MODEL });
   } catch (e) { console.error('AI request failed:', e.message); res.status(502).json({ error: 'اتصال به سرویس هوش مصنوعی ناموفق بود.' }); }
 });
+
+app.post('/api/image', async (req, res) => {
+  if (!ACCOUNT_ID || !API_TOKEN) return res.status(503).json({ error: 'تنظیمات Cloudflare در سرور کامل نیست.' });
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 1500) : '';
+  if (!prompt) return res.status(400).json({ error: 'توضیح تصویر خالی است.' });
+  const imageModel = process.env.CF_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell';
+  try {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${imageModel}`;
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok || data.success === false) {
+      console.error('Cloudflare image error:', upstream.status, JSON.stringify(data.errors || data));
+      return res.status(upstream.status === 429 ? 429 : 502).json({ error: 'ساخت تصویر ناموفق بود. مدل تصویر و مجوز Workers AI را در Cloudflare بررسی کن.' });
+    }
+    const image = data.result?.image;
+    if (!image) return res.status(502).json({ error: 'سرویس تصویر خروجی تصویری برنگرداند.' });
+    res.json({ image, mimeType: 'image/png', model: imageModel });
+  } catch (e) {
+    console.error('Image request failed:', e.message);
+    res.status(502).json({ error: 'اتصال به سرویس ساخت تصویر ناموفق بود.' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => console.log(`Karen AI API listening on ${PORT}`));
