@@ -8,7 +8,14 @@ const PORT = process.env.PORT || 10000;
 const ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 const API_TOKEN = process.env.CF_API_TOKEN;
 const MODEL = process.env.CF_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct';
-const SYSTEM_PROMPT = 'تو Karen AI هستی، یک دستیار هوش مصنوعی فارسی‌زبان و دوستانه. به زبان کاربر پاسخ بده. پاسخ‌ها مفید و روشن باشند. اگر مطمئن نیستی، صادقانه بگو. برای مسائل ریاضی مراحل را توضیح بده.';
+const SYSTEM_PROMPT = `You are Karen AI, a capable, friendly, multilingual assistant.
+Understand natural language rather than requiring fixed command phrases. Reply in the same language as the user (Persian or English, and other languages when possible).
+Use the conversation history to resolve references and follow-up questions. Keep context, but do not claim to remember information that is not in the supplied history.
+Answer questions, explain concepts, translate, summarize, brainstorm, help with schoolwork, math, writing, and programming.
+For math, calculate carefully and show steps when useful. For code, provide complete and practical examples when asked.
+Be honest about uncertainty. Never invent facts, live information, file contents, or actions you did not perform. If a request is unclear, ask one concise clarification.
+Do not pretend to create an image in a text response; image requests are routed to the image generator by the application.
+Be concise by default, and adapt detail to the user's request.`;
 app.use(express.static('public'));
 
 app.get('/', (_req, res) => {
@@ -32,6 +39,37 @@ app.post('/api/chat', async (req, res) => {
     if (!answer) return res.status(502).json({ error: 'مدل پاسخ متنی برنگرداند.' });
     res.json({ answer, model: MODEL });
   } catch (e) { console.error('AI request failed:', e.message); res.status(502).json({ error: 'اتصال به سرویس هوش مصنوعی ناموفق بود.' }); }
+});
+
+app.post('/api/intent', async (req, res) => {
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 2500) : '';
+  if (!message) return res.status(400).json({ error: 'پیام خالی است.' });
+  // A multilingual heuristic still works if the classifier service is unavailable.
+  const imagePattern = /(تصویر|عکس|نقاشی|طراحی کن|رندر کن|بساز|generate|create|draw|paint|render|make)\s*/i;
+  let fallback = imagePattern.test(message) && /(تصویر|عکس|نقاشی|image|picture|photo|illustration|artwork|wallpaper|logo|رز|گل)/i.test(message);
+  if (!ACCOUNT_ID || !API_TOKEN) return res.json({ intent: fallback ? 'image' : 'chat' });
+  try {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${MODEL}`;
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [
+        { role: 'system', content: 'Classify the user message. Return ONLY JSON: {"intent":"image"} if the user is asking you to generate, create, draw, paint, render, or make a visual image/picture/photo/logo/wallpaper. Otherwise return {"intent":"chat"}. The request can be in any language. A user merely discussing an image or asking a question about an existing image is chat, not image generation.' },
+        { role: 'user', content: message }
+      ], max_tokens: 30 }),
+      signal: AbortSignal.timeout(12000)
+    });
+    const data = await upstream.json().catch(() => ({}));
+    const raw = data.result?.response || data.result?.choices?.[0]?.message?.content || '';
+    const match = String(raw).match(/\\{[\\s\\S]*\\}/);
+    if (upstream.ok && match) {
+      const parsed = JSON.parse(match[0]);
+      return res.json({ intent: parsed.intent === 'image' ? 'image' : 'chat' });
+    }
+  } catch (e) {
+    console.error('Intent classification failed; using heuristic:', e.message);
+  }
+  return res.json({ intent: fallback ? 'image' : 'chat' });
 });
 
 async function makeImagePrompt(originalPrompt) {
