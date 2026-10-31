@@ -35,29 +35,80 @@ app.post('/api/chat', async (req, res) => {
 });
 
 app.post('/api/image', async (req, res) => {
-  if (!ACCOUNT_ID || !API_TOKEN) return res.status(503).json({ error: 'تنظیمات Cloudflare در سرور کامل نیست.' });
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 1500) : '';
   if (!prompt) return res.status(400).json({ error: 'توضیح تصویر خالی است.' });
-  const imageModel = process.env.CF_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell';
-  try {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${imageModel}`;
-    const upstream = await fetch(url, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt })
-    });
-    const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok || data.success === false) {
-      console.error('Cloudflare image error:', upstream.status, JSON.stringify(data.errors || data));
-      return res.status(upstream.status === 429 ? 429 : 502).json({ error: 'ساخت تصویر ناموفق بود. مدل تصویر و مجوز Workers AI را در Cloudflare بررسی کن.' });
+
+  // 1) Try Cloudflare first.
+  if (ACCOUNT_ID && API_TOKEN) {
+    try {
+      const imageModel = process.env.CF_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell';
+      const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${imageModel}`;
+      const upstream = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+        signal: AbortSignal.timeout(90000)
+      });
+      const contentType = upstream.headers.get('content-type') || '';
+      if (upstream.ok && contentType.includes('application/json')) {
+        const data = await upstream.json().catch(() => ({}));
+        const image = data.result?.image;
+        if (data.success !== false && image) {
+          return res.json({ image, mimeType: 'image/png', model: imageModel, provider: 'cloudflare' });
+        }
+        console.error('Cloudflare image error: no image in response', JSON.stringify(data.errors || data));
+      } else {
+        const details = await upstream.text().catch(() => '');
+        console.error('Cloudflare image error:', upstream.status, details.slice(0, 1200));
+      }
+    } catch (e) {
+      console.error('Cloudflare image request failed:', e.message);
     }
-    const image = data.result?.image;
-    if (!image) return res.status(502).json({ error: 'سرویس تصویر خروجی تصویری برنگرداند.' });
-    res.json({ image, mimeType: 'image/png', model: imageModel });
-  } catch (e) {
-    console.error('Image request failed:', e.message);
-    res.status(502).json({ error: 'اتصال به سرویس ساخت تصویر ناموفق بود.' });
+  } else {
+    console.log('Cloudflare image skipped: CF_ACCOUNT_ID or CF_API_TOKEN is missing.');
   }
+
+  // 2) Automatic fallback to Pollinations.
+  const pollinationsKey = process.env.POLLINATIONS_API_KEY;
+  if (pollinationsKey) {
+    try {
+      const imageUrl = new URL(`https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}`);
+      imageUrl.searchParams.set('model', process.env.POLLINATIONS_IMAGE_MODEL || 'flux');
+      imageUrl.searchParams.set('key', pollinationsKey);
+      const upstream = await fetch(imageUrl, {
+        headers: { Accept: 'image/*' },
+        signal: AbortSignal.timeout(120000)
+      });
+      const contentType = upstream.headers.get('content-type') || '';
+      if (!upstream.ok || !contentType.startsWith('image/')) {
+        const details = await upstream.text().catch(() => '');
+        console.error('Pollinations image error:', upstream.status, contentType, details.slice(0, 1200));
+        return res.status(502).json({
+          error: upstream.status === 429
+            ? 'محدودیت درخواست Pollinations موقتاً پر شده است؛ کمی بعد دوباره امتحان کن.'
+            : 'Cloudflare ناموفق بود و Pollinations هم تصویر نساخت. کلید و اعتبار Pollinations را بررسی کن.'
+        });
+      }
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      if (!bytes.length || bytes.length > 12 * 1024 * 1024) {
+        console.error('Pollinations returned an empty or oversized image:', bytes.length);
+        return res.status(502).json({ error: 'اندازه تصویر دریافتی نامعتبر است.' });
+      }
+      return res.json({
+        image: bytes.toString('base64'),
+        mimeType: contentType.split(';')[0] || 'image/png',
+        model: process.env.POLLINATIONS_IMAGE_MODEL || 'flux',
+        provider: 'pollinations'
+      });
+    } catch (e) {
+      console.error('Pollinations image request failed:', e.message);
+      return res.status(502).json({ error: 'هر دو سرویس ساخت تصویر ناموفق بودند؛ لاگ‌های Render را بررسی کن.' });
+    }
+  }
+
+  return res.status(503).json({
+    error: 'Cloudflare تصویر نساخت و کلید Pollinations هم در Render تنظیم نشده است.'
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => console.log(`Karen AI API listening on ${PORT}`));
