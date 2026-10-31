@@ -34,9 +34,41 @@ app.post('/api/chat', async (req, res) => {
   } catch (e) { console.error('AI request failed:', e.message); res.status(502).json({ error: 'اتصال به سرویس هوش مصنوعی ناموفق بود.' }); }
 });
 
+async function makeImagePrompt(originalPrompt) {
+  // Translate Persian to precise English for image models, without changing the requested subject.
+  if (!ACCOUNT_ID || !API_TOKEN) return originalPrompt;
+  try {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${MODEL}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: 'Translate the user image request into one concise, detailed English image-generation prompt. Preserve the exact main subject, colors, background, setting, and requested style. Do not invent, replace, or add objects. If the user requests a red rose on a black background, the prompt must explicitly say a red rose on a pure black background. Return only the prompt, no explanation.' },
+          { role: 'user', content: originalPrompt }
+        ],
+        max_tokens: 220
+      }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const data = await response.json().catch(() => ({}));
+    const translated = data.result?.response || data.result?.choices?.[0]?.message?.content;
+    if (response.ok && typeof translated === 'string' && translated.trim().length > 3) {
+      return translated.trim().slice(0, 1800);
+    }
+  } catch (e) {
+    console.error('Image prompt translation failed; using original prompt:', e.message);
+  }
+  return originalPrompt;
+}
+
 app.post('/api/image', async (req, res) => {
-  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 1500) : '';
-  if (!prompt) return res.status(400).json({ error: 'توضیح تصویر خالی است.' });
+  const originalPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 1500) : '';
+  if (!originalPrompt) return res.status(400).json({ error: 'توضیح تصویر خالی است.' });
+
+  const prompt = await makeImagePrompt(originalPrompt);
+  console.log('Image request received:', originalPrompt.slice(0, 300));
+  console.log('Image prompt prepared:', prompt.slice(0, 500));
 
   // 1) Try Cloudflare first.
   if (ACCOUNT_ID && API_TOKEN) {
